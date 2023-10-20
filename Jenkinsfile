@@ -1,42 +1,57 @@
+def secrets = [
+    [
+        path: 'secrets/creds/my-secret-text',
+        engineVersion: 2,
+        secretValues: [
+            [envVar: 'SONARQUBE_TOKEN', vaultKey: 'payment']
+        ]
+    ]
+]
+
+def configuration = [
+    vaultUrl: 'http://65.0.30.51:8200',
+    vaultCredentialId: 'vault-geetha-token',
+    engineVersion: 2
+]
+
 pipeline {
-  agent any
-  options {
-    buildDiscarder(logRotator(numToKeepStr: '5'))
-  }
-  environment {
-    
-    DOCKERHUB_CREDENTIALS = credentials('dockerhub')
-  }
-  stages {
-
-
-
-    
-  
-          stage('Docker Bench Security') {
-      steps {
-        sh 'chmod +x docker-bench-security.sh'
-        sh './docker-bench-security.sh'
-      }
+    agent any
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
     }
-
-
-     stage('SonarQube Analysis') {
-          agent any
-      steps {
-       
-
-       sh '/var/opt/sonar-scanner-4.7.0.2747-linux/bin/sonar-scanner -Dsonar.projectKey=paymentservice -Dsonar.sources=. -Dsonar.host.url=http://172.31.7.193:9000 -Dsonar.token=sqp_a12b4dc6367145a79a18ae8802af614730229ca8'
-
-        
-      }
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub')
     }
+    stages {
+        stage('Vault') {
+            steps {
+                script {
+                    withVault([configuration: configuration, vaultSecrets: payment]) {
+                        // Extract the SonarQube Token
+                        SONARQUBE_TOKEN = env.SONARQUBE_TOKEN
+                        sh "echo \${SONARQUBE_TOKEN}"
+                    }
+                }
+            }
+        }
 
+        stage('Docker Bench Security') {
+            steps {
+                sh 'chmod +x docker-bench-security.sh'
+                sh './docker-bench-security.sh'
+            }
+        }
 
+        stage('SonarQube Analysis') {
+            agent any
+            steps {
+                withVault([configuration: configuration, vaultSecrets: payment]) {
+                    sh '/var/opt/sonar-scanner-4.7.0.2747-linux/bin/sonar-scanner -Dsonar.projectKey=paymentservice -Dsonar.sources=. -Dsonar.host.url=http://172.31.7.193:9000 -Dsonar.token=$SONARQUBE_TOKEN'
+                }
+            }
+        }
 
-
-
-    stage('Build Docker Image') {
+        stage('Build Docker Image') {
             steps {
                 script {
                     def dockerImage = docker.build('koushiksai/paymentservice:latest', '.')
@@ -44,21 +59,21 @@ pipeline {
             }
         }
 
+        stage('Login') {
+            steps {
+                sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
+            }
+        }
 
-    stage('Login') {
-      steps {
-        sh 'echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin'
-      }
+        stage('Push') {
+            steps {
+                sh 'docker push koushiksai/paymentservice'
+            }
+        }
     }
-    stage('Push') {
-      steps {
-        sh 'docker push koushiksai/paymentservice'
-      }
+    post {
+        always {
+            sh 'docker logout'
+        }
     }
-  }
-  post {
-    always {
-      sh 'docker logout'
-    }
-  }
 }
